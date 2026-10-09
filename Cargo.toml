@@ -1,0 +1,17 @@
+[package]
+name = "german-string"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = "1.0.229"
+
+[dev-dependencies]
+compact_str = "0.10.0"
+criterion = "0.8.2"
+serde_json = "1"
+smol_str = "0.3.2"
+
+[[bench]]
+name = "comparison"
+harness = false
