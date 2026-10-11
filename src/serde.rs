@@ -1,4 +1,4 @@
-use super::GermanString;
+use crate::core::GermanString;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, Visitor},
