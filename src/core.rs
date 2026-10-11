@@ -32,20 +32,24 @@ union Variant {
     large: NonNull<u8>,
 }
 
-/// A compact immutable string representation. This is inspired by research at TU Munich <insert
-/// link to paper>.
+/// A compact immutable string representation. This is inspired by research at TU Munich:
+/// [Umbra: A Disk-Based System with In-Memory Performance](https://www.cidrdb.org/cidr2020/papers/p29-neumann-cidr20.pdf)
+///
+/// (Neumann and Freitag, CIDR 2020).
 ///
 /// The idea is that many strings are small, and often do not change. Thus, they do not need to be
 /// mutable/growable in many cases. Given the typical String implementation contains a pointer,
 /// length and capacity to some heap allocation, there is some wasted space.
 ///
-/// This string representation stores 32 bit size, a 4 byte prefix, and if needed, a pointer to
-/// a fixed sized allocation on the heap to store the remaining string.
+/// This string representation is 16 bytes: a 32 bit size, a 4 byte prefix, and 8 more bytes that
+/// hold either the rest of the string or a pointer to a fixed sized allocation on the heap.
 ///
-/// Thus, this representation can store strings <= 4 bytes entirely on the stack.
+/// Thus, this representation can store strings <= 12 bytes entirely inline, without allocating.
 ///
-/// There are two variants, small and large. The small case is when the entire string can be stored
-/// in the 4 byte prefix. Large is the variant that requires spill to a seperate heap allocation.
+/// There are two variants, small and large. The small case is when the entire string fits in the
+/// 4 byte prefix plus the 8 inline bytes. Large is the variant that requires a separate heap
+/// allocation, which holds the whole string; the prefix is kept inline as well so that many
+/// comparisons are decided without following the pointer.
 #[repr(C)]
 pub struct GermanString {
     size: u32,
@@ -569,18 +573,17 @@ mod test {
     const PREFIX_SIZE: usize = 4;
     const SMALL_STRING_SIZE: usize = 12;
 
-    // ---------------------------------------------------------------------------
-    // Layout
-    // ---------------------------------------------------------------------------
+    #[should_panic]
+    #[test]
+    fn test_too_large_panics() {
+        let s = "a".repeat(u32::MAX as usize + 1);
+        gs(&s);
+    }
 
     #[test]
     fn size_is_16_bytes() {
         assert_eq!(std::mem::size_of::<GermanString>(), 16);
     }
-
-    // ---------------------------------------------------------------------------
-    // Construction and variant selection
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn constructs_every_length_up_to_32() {
@@ -613,10 +616,6 @@ mod test {
             );
         }
     }
-
-    // ---------------------------------------------------------------------------
-    // Indexing and access
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn index_returns_every_byte() {
@@ -674,10 +673,6 @@ mod test {
         let _ = s[16];
     }
 
-    // ---------------------------------------------------------------------------
-    // Equality
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn equal_contents_are_equal_across_separate_allocations() {
         for s in boundary_strings() {
@@ -701,10 +696,6 @@ mod test {
         assert!(gs("a") != gs("a\0"));
         assert!(gs("abcd") != gs("abcd\0"));
     }
-
-    // ---------------------------------------------------------------------------
-    // Ordering
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn ordering_matches_str_for_all_pairs() {
@@ -797,10 +788,6 @@ mod test {
         }
     }
 
-    // ---------------------------------------------------------------------------
-    // compare_str
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn compare_str_matches_str_for_all_pairs() {
         let words = boundary_strings();
@@ -814,10 +801,6 @@ mod test {
             }
         }
     }
-
-    // ---------------------------------------------------------------------------
-    // Conversion back to String
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn round_trips_through_string() {
@@ -841,10 +824,6 @@ mod test {
             assert_eq!(back, s);
         }
     }
-
-    // ---------------------------------------------------------------------------
-    // Memory (most useful under `cargo miri test`)
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn drops_many_large_strings() {
@@ -882,10 +861,6 @@ mod test {
             assert_eq!(g.partial_cmp(&s).unwrap(), Ordering::Equal);
         }
     }
-    // ---------------------------------------------------------------------------
-    // Layout
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn prefix_and_inline_are_contiguous() {
         use std::mem::offset_of;
@@ -894,10 +869,6 @@ mod test {
             offset_of!(GermanString, prefix) + PREFIX_SIZE
         );
     }
-
-    // ---------------------------------------------------------------------------
-    // Borrowed views
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn as_bytes_matches_source() {
@@ -922,10 +893,6 @@ mod test {
         }
     }
 
-    // ---------------------------------------------------------------------------
-    // Formatting
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn display_matches_source() {
         for s in all_strings() {
@@ -941,10 +908,6 @@ mod test {
             assert!(out.contains(&format!("size: {}", s.len())), "{out}");
         }
     }
-
-    // ---------------------------------------------------------------------------
-    // Owned conversions
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn as_string_round_trips() {
@@ -965,10 +928,6 @@ mod test {
             );
         }
     }
-
-    // ---------------------------------------------------------------------------
-    // Hashing
-    // ---------------------------------------------------------------------------
 
     fn hash_of<T: std::hash::Hash + ?Sized>(value: &T) -> u64 {
         use std::hash::Hasher;

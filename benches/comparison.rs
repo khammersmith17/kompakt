@@ -1,14 +1,14 @@
-//! Compares GermanString against String, SmolStr and CompactString.
+//! Compares GermanString against String.
 //!
 //! Run with `cargo bench --bench comparison`, or filter, e.g. `cargo bench -- cmp/medium`.
 //!
-//! Inline capacities differ between the types, so the datasets are chosen around them:
+//! The datasets are chosen around GermanString's inline capacity of 12 bytes:
 //!
-//! | dataset | lengths  | GermanString | SmolStr / CompactString |
-//! |---------|----------|--------------|-------------------------|
-//! | short   | 1..=12   | inline       | inline                  |
-//! | medium  | 13..=23  | heap         | inline                  |
-//! | long    | 32..=128 | heap         | heap                    |
+//! | dataset | lengths  | GermanString |
+//! |---------|----------|--------------|
+//! | short   | 1..=12   | inline       |
+//! | medium  | 13..=23  | heap         |
+//! | long    | 32..=128 | heap         |
 //!
 //! Each dataset comes in two flavours: `distinct` strings mostly differ in their first 4 bytes
 //! (comparisons resolved by the prefix), `shared` strings all start with the same 4 bytes
@@ -17,13 +17,11 @@
 use std::cmp::Ordering;
 use std::hint::black_box;
 
-use compact_str::CompactString;
 use criterion::measurement::WallTime;
 use criterion::{
     BatchSize, BenchmarkGroup, BenchmarkId, Criterion, criterion_group, criterion_main,
 };
-use german_string::GermanString;
-use smol_str::SmolStr;
+use kompakt::GermanString;
 
 const N: usize = 1_000;
 
@@ -38,26 +36,6 @@ impl BenchStr for String {
     const NAME: &'static str = "String";
     fn make(s: &str) -> Self {
         s.to_owned()
-    }
-    fn view(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl BenchStr for SmolStr {
-    const NAME: &'static str = "SmolStr";
-    fn make(s: &str) -> Self {
-        SmolStr::new(s)
-    }
-    fn view(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl BenchStr for CompactString {
-    const NAME: &'static str = "CompactString";
-    fn make(s: &str) -> Self {
-        CompactString::new(s)
     }
     fn view(&self) -> &str {
         self.as_str()
@@ -146,13 +124,17 @@ fn datasets() -> Vec<Dataset> {
 
 fn bench_construct<T: BenchStr>(group: &mut BenchmarkGroup<WallTime>, data: &[Dataset]) {
     for d in data {
-        group.bench_with_input(BenchmarkId::new(T::NAME, &d.name), &d.strings, |b, strings| {
-            b.iter(|| {
-                for s in strings {
-                    black_box(T::make(black_box(s)));
-                }
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new(T::NAME, &d.name),
+            &d.strings,
+            |b, strings| {
+                b.iter(|| {
+                    for s in strings {
+                        black_box(T::make(black_box(s)));
+                    }
+                });
+            },
+        );
     }
 }
 
@@ -163,24 +145,30 @@ fn bench_eq<T: BenchStr>(group: &mut BenchmarkGroup<WallTime>, data: &[Dataset])
         let b_same: Vec<T> = d.strings.iter().map(|s| T::make(s)).collect();
         let b_diff: Vec<T> = d.strings.iter().rev().map(|s| T::make(s)).collect();
 
-        group.bench_function(BenchmarkId::new(T::NAME, format!("{}/equal", d.name)), |b| {
-            b.iter(|| {
-                let mut n = 0;
-                for (x, y) in a.iter().zip(&b_same) {
-                    n += (black_box(x) == black_box(y)) as usize;
-                }
-                n
-            });
-        });
-        group.bench_function(BenchmarkId::new(T::NAME, format!("{}/unequal", d.name)), |b| {
-            b.iter(|| {
-                let mut n = 0;
-                for (x, y) in a.iter().zip(&b_diff) {
-                    n += (black_box(x) == black_box(y)) as usize;
-                }
-                n
-            });
-        });
+        group.bench_function(
+            BenchmarkId::new(T::NAME, format!("{}/equal", d.name)),
+            |b| {
+                b.iter(|| {
+                    let mut n = 0;
+                    for (x, y) in a.iter().zip(&b_same) {
+                        n += (black_box(x) == black_box(y)) as usize;
+                    }
+                    n
+                });
+            },
+        );
+        group.bench_function(
+            BenchmarkId::new(T::NAME, format!("{}/unequal", d.name)),
+            |b| {
+                b.iter(|| {
+                    let mut n = 0;
+                    for (x, y) in a.iter().zip(&b_diff) {
+                        n += (black_box(x) == black_box(y)) as usize;
+                    }
+                    n
+                });
+            },
+        );
     }
 }
 
@@ -191,8 +179,8 @@ fn bench_cmp<T: BenchStr>(group: &mut BenchmarkGroup<WallTime>, data: &[Dataset]
             b.iter(|| {
                 let mut less = 0;
                 for pair in v.windows(2) {
-                    less += (black_box(&pair[0]).cmp(black_box(&pair[1])) == Ordering::Less)
-                        as usize;
+                    less +=
+                        (black_box(&pair[0]).cmp(black_box(&pair[1])) == Ordering::Less) as usize;
                 }
                 less
             });
@@ -236,8 +224,6 @@ macro_rules! group {
     ($c:expr, $name:literal, $f:ident, $data:expr) => {{
         let mut group = $c.benchmark_group($name);
         $f::<String>(&mut group, $data);
-        $f::<SmolStr>(&mut group, $data);
-        $f::<CompactString>(&mut group, $data);
         $f::<GermanString>(&mut group, $data);
         group.finish();
     }};
@@ -245,17 +231,13 @@ macro_rules! group {
 
 fn comparison(c: &mut Criterion) {
     println!(
-        "size_of: String={} SmolStr={} CompactString={} GermanString={}",
+        "size_of: String={} GermanString={}",
         size_of::<String>(),
-        size_of::<SmolStr>(),
-        size_of::<CompactString>(),
         size_of::<GermanString>(),
     );
     println!(
-        "size_of Option: String={} SmolStr={} CompactString={} GermanString={}",
+        "size_of Option: String={} GermanString={}",
         size_of::<Option<String>>(),
-        size_of::<Option<SmolStr>>(),
-        size_of::<Option<CompactString>>(),
         size_of::<Option<GermanString>>(),
     );
 
