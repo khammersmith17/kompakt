@@ -100,43 +100,14 @@ impl GermanString {
 
 #[cfg(test)]
 mod test {
-    use super::GermanString;
-
-    /// Strings on both sides of the prefix (4 byte) and inline (12 byte) limits, with multi-byte
-    /// characters of every width, some of them straddling those limits.
-    fn strings() -> Vec<&'static str> {
-        vec![
-            "",
-            "a",
-            "abcd",
-            "abcde",
-            "abcdefghijkl",
-            "abcdefghijklm",
-            "abcdefghijklmnopqrstuvwxyz",
-            "é",
-            "héllo",
-            "abcé",
-            "abcdefghijké",
-            "日本語",
-            "日本語テキスト",
-            "🦀",
-            "🦀🦀🦀🦀",
-            "aé日🦀",
-            "🦀日éa",
-            "a\0b",
-        ]
-    }
-
-    fn gs(s: &str) -> GermanString {
-        GermanString::new_from_str(s)
-    }
+    use crate::test_util::{all_strings, gs};
 
     /// Runs `check` against the borrowing and the owning iterator of every test string, together
     /// with the `str::chars` iterator they must agree with.
     fn for_each_iterator(
         check: impl Fn(&mut dyn DoubleEndedIterator<Item = char>, std::str::Chars),
     ) {
-        for s in strings() {
+        for s in all_strings() {
             let g = gs(s);
             check(&mut g.iter(), s.chars());
             check(&mut (&g).into_iter(), s.chars());
@@ -227,7 +198,7 @@ mod test {
 
     #[test]
     fn for_loops_work_by_reference_and_by_value() {
-        for s in strings() {
+        for s in all_strings() {
             let g = gs(s);
 
             let mut by_ref = String::new();
@@ -246,7 +217,7 @@ mod test {
 
     #[test]
     fn iter_leaves_the_string_usable() {
-        for s in strings() {
+        for s in all_strings() {
             let g = gs(s);
             assert_eq!(g.iter().count(), s.chars().count());
             assert_eq!(g.as_str(), s);
@@ -256,7 +227,7 @@ mod test {
     /// The owning iterator holds the heap allocation, so dropping it part-way must be clean.
     #[test]
     fn partially_consumed_owning_iterator_drops() {
-        for s in strings() {
+        for s in all_strings() {
             let mut iter = gs(s).into_iter();
             let mut expected = s.chars();
             assert_eq!(iter.next(), expected.next());

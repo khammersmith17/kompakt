@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-serde = "1.0.229"
+serde = {version = "1.0.229", optional = true}
+
+[features]
+default = []
+serde = ["dep:serde"]
 
 [dev-dependencies]
 compact_str = "0.10.0"

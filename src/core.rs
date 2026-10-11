@@ -564,44 +564,10 @@ mod test {
     use std::cmp::Ordering;
 
     use super::{GermanString, GermanStringType};
+    use crate::test_util::{all_strings, boundary_strings, gs};
 
     const PREFIX_SIZE: usize = 4;
     const SMALL_STRING_SIZE: usize = 12;
-
-    fn gs(s: &str) -> GermanString {
-        GermanString::from(s.to_string())
-    }
-
-    /// Strings covering every boundary: empty, inside the prefix, exactly the prefix,
-    /// spilling into the inline bytes, exactly the inline limit, and heap-allocated.
-    /// Many share prefixes so comparisons have to look past the first 4 bytes.
-    fn boundary_strings() -> Vec<&'static str> {
-        vec![
-            "",
-            "a",
-            "ab",
-            "abc",
-            "abcd",
-            "abce",
-            "abcde",
-            "abcdf",
-            "abcdefgh",
-            "abcdefghijk",
-            "abcdefghijkl",
-            "abcdefghijkm",
-            "abcdefghijklm",
-            "abcdefghijkln",
-            "abcdefghijklmnopqrst",
-            "abcdefghijklmnopqrsu",
-            "abd",
-            "abdzzzzzzzzzzzzz",
-            "b",
-            "bbbbbbbbbbbbbbbbbbbb",
-            "zzzz",
-            "a\0",
-            "a\0\0\0",
-        ]
-    }
 
     // ---------------------------------------------------------------------------
     // Layout
@@ -929,21 +895,6 @@ mod test {
         );
     }
 
-    /// Strings that exercise multi-byte UTF-8 across the prefix (byte 4) and inline (byte 12)
-    /// boundaries, in addition to the ASCII boundary strings.
-    fn all_strings() -> Vec<&'static str> {
-        let mut v = boundary_strings();
-        v.extend([
-            "héllo",
-            "abcé",
-            "abcdefghijké",
-            "日本語テキスト",
-            "🦀🦀🦀🦀",
-            "quote \" and \\ backslash and \n newline",
-        ]);
-        v
-    }
-
     // ---------------------------------------------------------------------------
     // Borrowed views
     // ---------------------------------------------------------------------------
@@ -1077,79 +1028,5 @@ mod test {
         let german: Vec<GermanString> = strings.iter().map(|s| gs(s)).collect();
         let std: Vec<String> = strings.iter().map(|s| s.to_string()).collect();
         assert_eq!(hash_of(&german), hash_of(&std));
-    }
-
-    // ---------------------------------------------------------------------------
-    // Serde
-    // ---------------------------------------------------------------------------
-
-    #[test]
-    fn serializes_as_plain_json_string() {
-        for s in all_strings() {
-            assert_eq!(
-                serde_json::to_string(&gs(s)).unwrap(),
-                serde_json::to_string(s).unwrap(),
-                "{s:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn serde_json_round_trips() {
-        for s in all_strings() {
-            let json = serde_json::to_string(&gs(s)).unwrap();
-            let back: GermanString = serde_json::from_str(&json).unwrap();
-            assert!(back == gs(s), "{s:?}");
-            assert_eq!(back.as_str(), s, "{s:?}");
-        }
-    }
-
-    #[test]
-    fn deserializes_owned_and_escaped_strings() {
-        // Escapes force serde_json to hand over an owned/unescaped buffer instead of a borrow.
-        let back: GermanString =
-            serde_json::from_str(r#""tab\there, a long escaped string""#).unwrap();
-        assert_eq!(back.as_str(), "tab\there, a long escaped string");
-
-        let back: GermanString = serde_json::from_str(r#""\u00e9t\u00e9""#).unwrap();
-        assert_eq!(back.as_str(), "été");
-    }
-
-    #[test]
-    fn deserializes_inside_containers() {
-        let words = all_strings();
-        let json = serde_json::to_string(&words).unwrap();
-        let back: Vec<GermanString> = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.len(), words.len());
-        for (g, s) in back.iter().zip(&words) {
-            assert_eq!(g.as_str(), *s);
-        }
-    }
-
-    #[test]
-    fn deserialize_rejects_non_strings() {
-        for json in ["42", "null", "true", "[]", "{}"] {
-            assert!(
-                serde_json::from_str::<GermanString>(json).is_err(),
-                "{json} should not deserialize"
-            );
-        }
-    }
-
-    #[test]
-    fn deserialize_rejects_invalid_utf8_bytes() {
-        use serde::Deserialize;
-        use serde::de::value::{BytesDeserializer, Error};
-
-        // A format that hands over raw bytes must never produce a GermanString from invalid UTF-8.
-        for bytes in [
-            &b"\xff"[..],
-            b"\xfe\xff",
-            b"abcdefghijklmnop\xff",
-            b"abc\xc3",
-        ] {
-            let result = GermanString::deserialize(BytesDeserializer::<Error>::new(bytes));
-            assert!(result.is_err(), "{bytes:?} should be rejected");
-        }
     }
 }
