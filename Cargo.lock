@@ -265,17 +265,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "german-string"
-version = "0.1.0"
-dependencies = [
- "compact_str",
- "criterion",
- "serde",
- "serde_json",
- "smol_str",
-]
-
-[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -310,6 +299,17 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kompakt"
+version = "0.1.0"
+dependencies = [
+ "compact_str",
+ "criterion",
+ "serde",
+ "serde_json",
+ "smol_str",
 ]
 
 [[package]]
