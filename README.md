@@ -1,9 +1,9 @@
 # kompakt
-This crate is an implementation of whats often called a German String. The idea came from the
+This crate is a lightweight implementation of whats often called a German String. The idea came from the
 following paper out of TU Munich: [Umbra: A Disk-Based System with In-Memory Performance](https://www.cidrdb.org/cidr2020/papers/p29-neumann-cidr20.pdf)
 (Neumann and Freitag, CIDR 2020).
 
-compakt is the german word for compact.
+'kompakt' is the german word for compact.
 
 The idea is that strings are often rather small and they do not change often. [String] from the
 standard library is designed from growable strings, and just wraps a [Vec<u8>].
@@ -11,9 +11,11 @@ standard library is designed from growable strings, and just wraps a [Vec<u8>].
 Given the property of immutability, and that most strings are small, a string can be
 represented in 16 bytes, and only needs to store data indirect on the heap when needed.
 
-This representation stores the size as a [u32], a 4 byte prefix, and either an inline 8 byte
-array, or a 8 byte pointer to the heap. This compact representation can store strings whose
-underlying bytes are less than or equal to length can be stored on the stack.
+There are two variants, small and large. Small strings are strings that are smaller than 12 bytes. Both have the same representation for the first 8 bytes. This shared 8 bytes is a u32 size, and 4 byte prefix.
+
+For small strings, an additional 8 byte is an inline array, storing up to the 8 remaining bytes. If the string in smaller than 12 bytes, all additional space is zero padded. In this case, the entire string can be stored on the stack, or contiguously in an array.
+
+For large strings, the remaining 8 bytes is a pointer to the entire string on the heap. This adds 4 bytes of overhead in the heap allocation (prefix is stored twice), but this allows for contiguous views of the string, and more straight forward comparisons. The heap allocation is fixed size and it immutable.
 
 An allocation of [GermanString] can be stored largely contiguously.
 
@@ -23,7 +25,7 @@ prefix.
 [GermanString] includes common iterator implementations and opt in serde with the "serde"
 feature.
 
-For long strings that need mutation, this is not the data structure. But for the many string use case in modern applications, this data structure significantly lowers the overhead of strings.
+For long strings that need mutation, this is not the data structure. But for the many string use case in modern applications, this data structure significantly lowers the overhead of strings. As seen in the benchmarks (run on Apple M1 chip), short construction and comparison can be much faster than standard strings. Longer strings are slightly worse, but this is expected. Also, 'GermanString' is 16 bytes and 'String' is 24 bytes.
 
 ## Benchmarks
 

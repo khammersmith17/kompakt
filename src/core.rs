@@ -13,6 +13,13 @@ fn index_panic_message(idx: usize, size: u32) -> String {
     format!("Index {} is out of bounds for string length {}", idx, size)
 }
 
+fn length_panic_message(size: usize) -> String {
+    format!(
+        "Length {} is too large. GermanString size if limited to strings less than u32::MAX in length",
+        size,
+    )
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[repr(u8)]
 pub enum GermanStringType {
@@ -69,12 +76,14 @@ impl AsRef<str> for GermanString {
 }
 
 impl std::hash::Hash for GermanString {
+    // Delegate to str.
     fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
         self.as_str().hash(hasher);
     }
 }
 
 impl fmt::Debug for GermanString {
+    // Diverge from String for Debug as layout can be important for debugging.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let variant = self.suffix();
         f.debug_struct("GermanString")
@@ -103,10 +112,12 @@ impl Index<usize> for GermanString {
             index_panic_message(idx, self.size)
         );
 
+        // Use prefix if we can.
         if idx < PREFIX_SIZE {
             return &self.prefix[idx];
         }
 
+        // Delegate to variant specific method.
         match self.variant_type() {
             GermanStringType::Large => self.index_overflow(idx),
             GermanStringType::Small => self.index_inline(idx),
@@ -117,10 +128,12 @@ impl Index<usize> for GermanString {
 impl PartialEq for GermanString {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
+        // First check header.
         if self.header() != other.header() {
             return false;
         }
 
+        // Otherwise delegate the &[u8] ordering.
         match self.variant_type() {
             GermanStringType::Small => unsafe { self.variant.small == other.variant.small },
             GermanStringType::Large => self.overflow_ref() == other.overflow_ref(),
@@ -215,19 +228,20 @@ impl Ord for GermanString {
 }
 
 impl GermanString {
-    /// Build a new [GermanString] from a &str.
+    /// Build a new [GermanString] from a [&str].
+    /// The only fallible condition is when the [&str] is larger than u32::MAX in size.
     #[inline]
     pub fn new_from_str(s: &str) -> GermanString {
-        GermanString::new_from_str_fallible(s)
-            .expect("GermanString size if limited to strings less than u32::MAX in length")
+        let len = s.len();
+        GermanString::new_from_str_fallible(s).expect(&length_panic_message(len))
     }
 
     /// Build a new [GermanString] from a [String]. This is most performant when the string is
     /// large.
     #[inline]
     pub fn new_from_string(s: String) -> GermanString {
-        GermanString::new_fallible(s)
-            .expect("GermanString size if limited to strings less than u32::MAX in length")
+        let len = s.len();
+        GermanString::new_fallible(s).expect(&length_panic_message(len))
     }
 
     /// Safe get [char].
@@ -235,19 +249,12 @@ impl GermanString {
         self.as_str().get(idx..)?.chars().next()
     }
 
-    /// Safe get [char].
-    pub fn get_byte(&self, idx: usize) -> Option<u8> {
-        if idx >= self.size as usize {
-            None
-        } else {
-            Some(self[idx])
-        }
-    }
-
+    /// Get a view into the underlying &[u8] slice.
     pub fn as_bytes(&self) -> &[u8] {
         self.as_ref()
     }
 
+    /// Get a view of the [GermanString] as a &str.
     pub fn as_str(&self) -> &str {
         self.as_str_slice(0..self.size())
     }
@@ -256,6 +263,11 @@ impl GermanString {
     /// [Into<String] implementation is zero copy.
     pub fn as_string(&self) -> String {
         self.string_from_ref()
+    }
+
+    /// Get the total size of a [GermanString].
+    pub fn len(&self) -> usize {
+        self.size as usize
     }
 }
 
@@ -273,7 +285,7 @@ impl GermanString {
 
     #[inline]
     pub(crate) fn new_fallible(s: String) -> Result<GermanString, ()> {
-        if s.len() > u32::MAX as usize {
+        if s.as_bytes().len() > u32::MAX as usize {
             return Err(());
         }
         if s.len() <= SMALL_STRING_SIZE {
@@ -285,7 +297,7 @@ impl GermanString {
 
     #[inline]
     pub(crate) fn new_from_str_fallible(s: &str) -> Result<GermanString, ()> {
-        if s.len() > u32::MAX as usize {
+        if s.as_bytes().len() > u32::MAX as usize {
             return Err(());
         }
         if s.len() <= SMALL_STRING_SIZE {
@@ -507,7 +519,7 @@ impl GermanString {
 
     /// Coerce the heap allocated portion into a String.
     fn to_string_large(self) -> String {
-        // Manually drop self.
+        // Manually drop self so the String allocation is not dropped.
         let this = std::mem::ManuallyDrop::new(self);
         let size = this.size as usize;
 
@@ -536,6 +548,7 @@ impl GermanString {
 
 impl Drop for GermanString {
     fn drop(&mut self) {
+        // Explicitly drop heap allocation if needed.
         if self.variant_type() == GermanStringType::Large {
             let boxed_overflow = unsafe {
                 let ptr = self.variant.large.as_ptr();
@@ -555,6 +568,7 @@ impl From<String> for GermanString {
 }
 
 impl Into<String> for GermanString {
+    // Into given it is impossible to construct a non utf8 string here.
     fn into(self) -> String {
         match self.variant_type() {
             GermanStringType::Small => self.to_string_small(),
@@ -626,20 +640,6 @@ mod test {
             for (i, &b) in expected.iter().enumerate() {
                 assert_eq!(s[i], b, "length {len}, index {i}");
             }
-        }
-    }
-
-    #[test]
-    fn get_returns_every_byte_and_none_past_end() {
-        let source = "abcdefghijklmnopqrstuvwxyz012345";
-        for len in 0..=source.len() {
-            let expected = &source.as_bytes()[..len];
-            let s = gs(&source[..len]);
-            for (i, &b) in expected.iter().enumerate() {
-                assert_eq!(s.get_byte(i), Some(b), "length {len}, index {i}");
-            }
-            assert_eq!(s.get(len), None, "length {len}, index {len}");
-            assert_eq!(s.get(len + 100), None);
         }
     }
 

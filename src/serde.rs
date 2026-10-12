@@ -19,13 +19,15 @@ impl Visitor<'_> for GermanStringVisitor {
     }
 
     fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
-        let gs = GermanString::new_from_str_fallible(value)
-            .map_err(|_| E::invalid_length(value.len(), &self))?;
-        Ok(gs)
+        // Too large fails.
+        let len = value.len();
+        GermanString::new_from_str_fallible(value).map_err(|_| E::invalid_length(len, &self))
     }
 
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
-        Ok(GermanString::new_from_string(value))
+    fn visit_string<E: de::Error>(self, value: String) -> Result<Self::Value, E> {
+        // Too large fails.
+        let len = value.len();
+        GermanString::new_fallible(value).map_err(|_| E::invalid_length(len, &self))
     }
 }
 
