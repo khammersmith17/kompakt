@@ -20,6 +20,7 @@
 //! [GermanString] includes common iterator implementations and opt in serde with the "serde"
 //! feature.
 mod core;
+mod error;
 mod iter;
 
 #[cfg(feature = "serde")]
@@ -29,4 +30,5 @@ pub mod serde;
 mod test_util;
 
 pub use core::GermanString;
+pub use error::GermanStringLengthError;
 pub use iter::{GermanStringIntoIter, GermanStringIter};

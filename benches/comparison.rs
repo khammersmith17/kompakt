@@ -45,7 +45,7 @@ impl BenchStr for String {
 impl BenchStr for GermanString {
     const NAME: &'static str = "GermanString";
     fn make(s: &str) -> Self {
-        GermanString::new_from_str(s)
+        GermanString::new_from_str(s).unwrap()
     }
     fn view(&self) -> &str {
         self.as_str()

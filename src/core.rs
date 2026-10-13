@@ -1,24 +1,16 @@
+use crate::error::GermanStringLengthError;
 use std::{
+    borrow::Borrow,
     cmp::Ordering,
     fmt,
-    ops::{Index, Range},
+    ops::{Deref, Range},
     ptr::{self, NonNull},
+    str::FromStr,
 };
 
 const PREFIX_SIZE: usize = 4_usize;
 const INLINE_SIZE: usize = 8_usize;
 const SMALL_STRING_SIZE: usize = PREFIX_SIZE + INLINE_SIZE;
-
-fn index_panic_message(idx: usize, size: u32) -> String {
-    format!("Index {} is out of bounds for string length {}", idx, size)
-}
-
-fn length_panic_message(size: usize) -> String {
-    format!(
-        "Length {} is too large. GermanString size if limited to strings less than u32::MAX in length",
-        size,
-    )
-}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[repr(u8)]
@@ -64,6 +56,27 @@ pub struct GermanString {
     variant: Variant,
 }
 
+impl Default for GermanString {
+    fn default() -> GermanString {
+        GermanString::make_default()
+    }
+}
+
+impl Clone for GermanString {
+    fn clone(&self) -> Self {
+        let size = self.size;
+        let prefix = self.prefix;
+
+        let variant = self.clone_variant();
+
+        Self {
+            size,
+            prefix,
+            variant,
+        }
+    }
+}
+
 // SAFETY: NonNull ppointer disables safety.
 // This type is safe to send/share across threads as it is immutable.
 unsafe impl Send for GermanString {}
@@ -71,6 +84,48 @@ unsafe impl Sync for GermanString {}
 
 impl AsRef<str> for GermanString {
     fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Deref for GermanString {
+    type Target = str;
+
+    #[inline]
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl TryFrom<&str> for GermanString {
+    type Error = GermanStringLengthError;
+
+    #[inline]
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        GermanString::new_from_str(s)
+    }
+}
+
+impl FromStr for GermanString {
+    type Err = GermanStringLengthError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        GermanString::new_from_str(s)
+    }
+}
+
+impl TryFrom<String> for GermanString {
+    type Error = GermanStringLengthError;
+
+    #[inline]
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        GermanString::new_from_string(s)
+    }
+}
+
+impl Borrow<str> for GermanString {
+    fn borrow(&self) -> &str {
         self.as_str()
     }
 }
@@ -98,30 +153,6 @@ impl fmt::Display for GermanString {
     // Consistent with Sting's Display.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-impl Index<usize> for GermanString {
-    type Output = u8;
-
-    #[inline]
-    fn index(&self, idx: usize) -> &Self::Output {
-        assert!(
-            idx < self.size as usize,
-            "{}",
-            index_panic_message(idx, self.size)
-        );
-
-        // Use prefix if we can.
-        if idx < PREFIX_SIZE {
-            return &self.prefix[idx];
-        }
-
-        // Delegate to variant specific method.
-        match self.variant_type() {
-            GermanStringType::Large => self.index_overflow(idx),
-            GermanStringType::Small => self.index_inline(idx),
-        }
     }
 }
 
@@ -159,20 +190,38 @@ impl PartialEq<String> for GermanString {
     }
 }
 
+impl PartialEq<GermanString> for str {
+    fn eq(&self, other: &GermanString) -> bool {
+        other.as_str().eq(self)
+    }
+}
+
+impl PartialEq<GermanString> for &str {
+    fn eq(&self, other: &GermanString) -> bool {
+        other.as_str().eq(*self)
+    }
+}
+
+impl PartialEq<GermanString> for String {
+    fn eq(&self, other: &GermanString) -> bool {
+        self.as_str().eq(other.as_str())
+    }
+}
+
 impl Eq for GermanString {}
 
-impl PartialOrd for GermanString {
+impl Ord for GermanString {
     #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn cmp(&self, other: &Self) -> Ordering {
         // First try prefix order.
         let prefix_ord = self.cmp_prefix(other);
 
         if !matches!(prefix_ord, Ordering::Equal) {
-            return Some(prefix_ord);
+            return prefix_ord;
         }
 
         // Determine where the rest lives, and use built in u8 ordering.
-        let ord = match (self.variant_type(), other.variant_type()) {
+        match (self.variant_type(), other.variant_type()) {
             (GermanStringType::Small, GermanStringType::Small) => {
                 // Best path, both inline.
                 let (mine, theirs) = unsafe {
@@ -187,11 +236,16 @@ impl PartialOrd for GermanString {
                 // Otherwise, at least one is indirect.
                 let mine = self.suffix();
                 let theirs = other.suffix();
-                mine.cmp(&theirs)
+                mine.cmp(theirs)
             }
-        };
+        }
+    }
+}
 
-        Some(ord)
+impl PartialOrd for GermanString {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -219,11 +273,27 @@ impl PartialOrd<String> for GermanString {
     }
 }
 
-impl Ord for GermanString {
+impl PartialOrd<GermanString> for str {
     /// Delegate to str ordering.
     #[inline]
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
+    fn partial_cmp(&self, other: &GermanString) -> Option<Ordering> {
+        Some(other.as_str().partial_cmp(self)?.reverse())
+    }
+}
+
+impl PartialOrd<GermanString> for &str {
+    /// Delegate to str ordering.
+    #[inline]
+    fn partial_cmp(&self, other: &GermanString) -> Option<Ordering> {
+        Some(other.as_str().partial_cmp(*self)?.reverse())
+    }
+}
+
+impl PartialOrd<GermanString> for String {
+    /// Delegate to str ordering.
+    #[inline]
+    fn partial_cmp(&self, other: &GermanString) -> Option<Ordering> {
+        self.as_str().partial_cmp(other.as_str())
     }
 }
 
@@ -231,17 +301,15 @@ impl GermanString {
     /// Build a new [GermanString] from a [&str].
     /// The only fallible condition is when the [&str] is larger than u32::MAX in size.
     #[inline]
-    pub fn new_from_str(s: &str) -> GermanString {
-        let len = s.len();
-        GermanString::new_from_str_fallible(s).expect(&length_panic_message(len))
+    pub fn new_from_str(s: &str) -> Result<GermanString, GermanStringLengthError> {
+        GermanString::new_from_str_fallible(s)
     }
 
     /// Build a new [GermanString] from a [String]. This is most performant when the string is
     /// large.
     #[inline]
-    pub fn new_from_string(s: String) -> GermanString {
-        let len = s.len();
-        GermanString::new_fallible(s).expect(&length_panic_message(len))
+    pub fn new_from_string(s: String) -> Result<GermanString, GermanStringLengthError> {
+        GermanString::new_fallible(s)
     }
 
     /// Safe get [char].
@@ -255,6 +323,7 @@ impl GermanString {
     }
 
     /// Get a view of the [GermanString] as a &str.
+    #[inline]
     pub fn as_str(&self) -> &str {
         self.as_str_slice(0..self.size())
     }
@@ -269,10 +338,53 @@ impl GermanString {
     pub fn len(&self) -> usize {
         self.size as usize
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0_usize
+    }
 }
 
 /// Private methods.
 impl GermanString {
+    #[inline]
+    fn clone_variant(&self) -> Variant {
+        match self.variant_type() {
+            GermanStringType::Small => {
+                // Clone the 8 byte inline portion.
+                let small = unsafe { self.variant.small };
+                Variant { small }
+            }
+            GermanStringType::Large => self.clone_heap_allocation(),
+        }
+    }
+
+    #[inline]
+    fn clone_heap_allocation(&self) -> Variant {
+        debug_assert_eq!(self.variant_type(), GermanStringType::Large);
+        // Copy the allocation into a new Box. Box::from on a reference clones.
+        let copy: Box<[u8]> = Box::from(self.as_ref());
+        let rest_ptr = Box::into_raw(copy) as *mut u8;
+
+        // SAFETY: `into_raw` consumes the Box.
+        let rest = unsafe { NonNull::new_unchecked(rest_ptr) };
+        Variant { large: rest }
+    }
+
+    // Default to an empty string.
+    fn make_default() -> GermanString {
+        let size = 0_u32;
+        let prefix = [0_u8; 4];
+        let inline = [0_u8; 8];
+
+        GermanString {
+            size,
+            prefix,
+            variant: Variant { small: inline },
+        }
+    }
+
+    /// Get a slice to the string. Serves both references, and sliced references in the iterators.
+    #[inline]
     pub(crate) fn as_str_slice(&self, rng: Range<usize>) -> &str {
         // SAFETY: It is impossible to construct a non-utf8 encoded string.
         unsafe { std::str::from_utf8_unchecked(self.as_ref().get_unchecked(rng)) }
@@ -284,9 +396,9 @@ impl GermanString {
     }
 
     #[inline]
-    pub(crate) fn new_fallible(s: String) -> Result<GermanString, ()> {
-        if s.as_bytes().len() > u32::MAX as usize {
-            return Err(());
+    pub(crate) fn new_fallible(s: String) -> Result<GermanString, GermanStringLengthError> {
+        if s.len() > u32::MAX as usize {
+            return Err(GermanStringLengthError(s.len() as u64));
         }
         if s.len() <= SMALL_STRING_SIZE {
             Ok(GermanString::new_small(s))
@@ -296,14 +408,14 @@ impl GermanString {
     }
 
     #[inline]
-    pub(crate) fn new_from_str_fallible(s: &str) -> Result<GermanString, ()> {
-        if s.as_bytes().len() > u32::MAX as usize {
-            return Err(());
+    pub(crate) fn new_from_str_fallible(s: &str) -> Result<GermanString, GermanStringLengthError> {
+        if s.len() > u32::MAX as usize {
+            return Err(GermanStringLengthError(s.len() as u64));
         }
         if s.len() <= SMALL_STRING_SIZE {
-            Ok(GermanString::new_small_from_str(&s))
+            Ok(GermanString::new_small_from_str(s))
         } else {
-            Ok(GermanString::new_large_from_str(&s))
+            Ok(GermanString::new_large_from_str(s))
         }
     }
 
@@ -369,16 +481,16 @@ impl GermanString {
                 let tail = u32::from_le(ptr::read_unaligned(src.add(size - 4) as *const u32));
 
                 // Widen head + OR the inline bits to the MSB in little endidan order.
-                let lo = u64::from(head) | (u64::from(tail) << (size - 4) * 8);
-                (u64::from(lo), 0)
+                let lo = u64::from(head) | (u64::from(tail) << ((size - 4) * 8));
+                (lo, 0)
             } else if size >= 2 {
                 // u16 reads
                 // No inline portion here.
                 let head = u16::from_le(ptr::read_unaligned(src as *const u16));
                 let tail = u16::from_le(ptr::read_unaligned(src.add(size - 2) as *const u16));
 
-                let lo = u64::from(head) | (u64::from(tail) << (size - 2) * 8);
-                (u64::from(lo), 0)
+                let lo = u64::from(head) | (u64::from(tail) << ((size - 2) * 8));
+                (lo, 0)
             } else if size == 1 {
                 (u64::from(*src), 0)
             } else {
@@ -482,25 +594,6 @@ impl GermanString {
         }
     }
 
-    /// Index into the inline portion when the string is small.
-    #[inline]
-    fn index_inline(&self, idx: usize) -> &u8 {
-        debug_assert_eq!(self.variant_type(), GermanStringType::Small);
-        let inline = self.inline_ref();
-        let offset = idx - PREFIX_SIZE;
-        &inline[offset]
-    }
-
-    /// Index into the overflow portion when the string is large.
-    #[inline]
-    fn index_overflow(&self, idx: usize) -> &u8 {
-        debug_assert_eq!(self.variant_type(), GermanStringType::Large);
-        unsafe {
-            let ptr = self.variant.large.as_ptr();
-            ptr.add(idx).as_ref().unwrap()
-        }
-    }
-
     /// Header consists of size + prefix fused into a u64.
     /// Cheap equality check before delegating to the union.
     #[inline]
@@ -518,7 +611,7 @@ impl GermanString {
     }
 
     /// Coerce the heap allocated portion into a String.
-    fn to_string_large(self) -> String {
+    fn into_string_large(self) -> String {
         // Manually drop self so the String allocation is not dropped.
         let this = std::mem::ManuallyDrop::new(self);
         let size = this.size as usize;
@@ -534,7 +627,7 @@ impl GermanString {
     }
 
     /// Build a string from the prefix + inline portion.
-    fn to_string_small(self) -> String {
+    fn into_string_small(self) -> String {
         // SAFETY: Construction validates utf8.
         unsafe { String::from_utf8_unchecked(self.as_ref().to_vec()) }
     }
@@ -560,19 +653,12 @@ impl Drop for GermanString {
     }
 }
 
-impl From<String> for GermanString {
-    #[inline]
-    fn from(s: String) -> GermanString {
-        GermanString::new_from_string(s)
-    }
-}
-
-impl Into<String> for GermanString {
+impl From<GermanString> for String {
     // Into given it is impossible to construct a non utf8 string here.
-    fn into(self) -> String {
-        match self.variant_type() {
-            GermanStringType::Small => self.to_string_small(),
-            GermanStringType::Large => self.to_string_large(),
+    fn from(gs: GermanString) -> String {
+        match gs.variant_type() {
+            GermanStringType::Small => gs.into_string_small(),
+            GermanStringType::Large => gs.into_string_large(),
         }
     }
 }
@@ -632,45 +718,12 @@ mod test {
     }
 
     #[test]
-    fn index_returns_every_byte() {
-        let source = "abcdefghijklmnopqrstuvwxyz012345";
-        for len in 0..=source.len() {
-            let expected = &source.as_bytes()[..len];
-            let s = gs(&source[..len]);
-            for (i, &b) in expected.iter().enumerate() {
-                assert_eq!(s[i], b, "length {len}, index {i}");
-            }
-        }
-    }
-
-    #[test]
     fn get_char_ascii() {
         let s = gs("hello, german string");
         for (i, c) in "hello, german string".chars().enumerate() {
             assert_eq!(s.get(i), Some(c));
         }
         assert_eq!(s.get(100), None);
-    }
-
-    #[test]
-    #[should_panic]
-    fn index_out_of_bounds_small_panics() {
-        let s = gs("abc");
-        let _ = s[3];
-    }
-
-    #[test]
-    #[should_panic]
-    fn index_out_of_bounds_inline_panics() {
-        let s = gs("abcdefgh");
-        let _ = s[8];
-    }
-
-    #[test]
-    #[should_panic]
-    fn index_out_of_bounds_large_panics() {
-        let s = gs("abcdefghijklmnop");
-        let _ = s[16];
     }
 
     #[test]
@@ -838,7 +891,7 @@ mod test {
     fn large_string_outlives_source() {
         let g = {
             let source = String::from("this string is dropped before use");
-            GermanString::from(source)
+            GermanString::try_from(source).unwrap()
         };
         assert_eq!(
             g.partial_cmp("this string is dropped before use").unwrap(),
@@ -846,21 +899,6 @@ mod test {
         );
     }
 
-    #[test]
-    fn heap_reads_stay_in_bounds() {
-        // Allocations whose tail lengths are just over the inline limit.
-        for len in [
-            PREFIX_SIZE + 1,
-            SMALL_STRING_SIZE + 1,
-            SMALL_STRING_SIZE + 2,
-            64,
-        ] {
-            let s = "x".repeat(len);
-            let g = gs(&s);
-            assert_eq!(g[len - 1], b'x');
-            assert_eq!(g.partial_cmp(&s).unwrap(), Ordering::Equal);
-        }
-    }
     #[test]
     fn prefix_and_inline_are_contiguous() {
         use std::mem::offset_of;
@@ -987,5 +1025,494 @@ mod test {
         let german: Vec<GermanString> = strings.iter().map(|s| gs(s)).collect();
         let std: Vec<String> = strings.iter().map(|s| s.to_string()).collect();
         assert_eq!(hash_of(&german), hash_of(&std));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Default
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn default_is_the_empty_string() {
+        let d = GermanString::default();
+        assert_eq!(d.as_str(), "");
+        assert_eq!(d.len(), 0);
+        assert_eq!(d.variant_type(), GermanStringType::Small);
+        assert_eq!(d.as_str(), String::default());
+    }
+
+    /// The default must be indistinguishable from an empty string built any other way.
+    #[test]
+    fn default_matches_constructed_empty_string() {
+        let d = GermanString::default();
+        let empty = gs("");
+        assert!(d == empty);
+        assert_eq!(d.cmp(&empty), Ordering::Equal);
+        assert_eq!(hash_of(&d), hash_of(&empty));
+        assert_eq!(hash_of(&d), hash_of(""));
+    }
+
+    // ---------------------------------------------------------------------------
+    // TryFrom and FromStr
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn try_from_str_matches_source() {
+        for s in all_strings() {
+            let g = GermanString::try_from(s).unwrap();
+            assert_eq!(g.as_str(), s, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn try_from_string_matches_source() {
+        for s in all_strings() {
+            let g = GermanString::try_from(s.to_string()).unwrap();
+            assert_eq!(g.as_str(), s, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn from_str_matches_source() {
+        use std::str::FromStr;
+
+        for s in all_strings() {
+            assert_eq!(GermanString::from_str(s).unwrap().as_str(), s, "{s:?}");
+
+            let parsed: GermanString = s.parse().unwrap();
+            assert_eq!(parsed.as_str(), s, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn every_conversion_builds_the_same_value() {
+        for s in all_strings() {
+            let expected = GermanString::new_from_str(s).unwrap();
+            let from_str: GermanString = s.try_into().unwrap();
+            let from_string: GermanString = s.to_string().try_into().unwrap();
+            let parsed: GermanString = s.parse().unwrap();
+
+            for (name, g) in [
+                ("TryFrom<&str>", from_str),
+                ("TryFrom<String>", from_string),
+                ("FromStr", parsed),
+            ] {
+                assert!(g == expected, "{name} {s:?}");
+                assert_eq!(g.variant_type(), expected.variant_type(), "{name} {s:?}");
+                assert_eq!(hash_of(&g), hash_of(&expected), "{name} {s:?}");
+            }
+        }
+    }
+
+    /// The fallible conversions have to be usable with `?` in functions returning a boxed error.
+    #[test]
+    fn conversion_errors_convert_to_boxed_errors() {
+        fn convert(s: &str) -> Result<GermanString, Box<dyn std::error::Error>> {
+            let from_str = GermanString::try_from(s)?;
+            let parsed: GermanString = s.parse()?;
+            assert!(from_str == parsed);
+            Ok(GermanString::try_from(s.to_string())?)
+        }
+
+        assert_eq!(
+            convert("hello, german string").unwrap().as_str(),
+            "hello, german string"
+        );
+    }
+
+    #[test]
+    fn length_error_reports_the_length() {
+        use crate::GermanStringLengthError;
+        use std::error::Error;
+
+        let too_long = u64::from(u32::MAX) + 1;
+        let err = GermanStringLengthError(too_long);
+        assert!(err.to_string().contains(&too_long.to_string()), "{err}");
+        assert!(format!("{err:?}").contains(&too_long.to_string()));
+        assert!(err.source().is_none());
+        assert!(err == GermanStringLengthError(too_long));
+        assert!(err != GermanStringLengthError(too_long + 1));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Borrow<str>
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn borrow_matches_source() {
+        use std::borrow::Borrow;
+
+        for s in all_strings() {
+            let g = gs(s);
+            let borrowed: &str = g.borrow();
+            assert_eq!(borrowed, s, "{s:?}");
+        }
+    }
+
+    /// Borrow<str> promises the borrowed form hashes and compares like the owned one, which is
+    /// what lets a map keyed by GermanString be queried with a &str.
+    #[test]
+    fn hash_map_is_queryable_by_str() {
+        use std::collections::HashMap;
+
+        let strings = all_strings();
+        let map: HashMap<GermanString, usize> = strings
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (gs(s), i))
+            .collect();
+        assert_eq!(map.len(), strings.len());
+
+        for (i, s) in strings.iter().enumerate() {
+            assert_eq!(map.get(*s), Some(&i), "{s:?}");
+            assert!(map.contains_key(*s), "{s:?}");
+            assert_eq!(map.get(s.to_string().as_str()), Some(&i), "{s:?}");
+        }
+        assert_eq!(map.get("not a key"), None);
+        assert_eq!(map.get("a string too long to be stored inline"), None);
+    }
+
+    #[test]
+    fn hash_set_is_queryable_by_str() {
+        use std::collections::HashSet;
+
+        let strings = all_strings();
+        let mut set: HashSet<GermanString> = strings.iter().map(|s| gs(s)).collect();
+        for s in &strings {
+            assert!(set.contains(*s), "{s:?}");
+        }
+        assert!(!set.contains("not a key"));
+
+        assert!(set.remove("abcdefghijklm"));
+        assert!(!set.contains("abcdefghijklm"));
+    }
+
+    /// The ordered collections rely on Ord agreeing with str rather than Hash.
+    #[test]
+    fn btree_map_is_queryable_by_str() {
+        use std::collections::BTreeMap;
+        use std::ops::Bound;
+
+        let strings = all_strings();
+        let map: BTreeMap<GermanString, usize> = strings
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (gs(s), i))
+            .collect();
+
+        for (i, s) in strings.iter().enumerate() {
+            assert_eq!(map.get(*s), Some(&i), "{s:?}");
+        }
+        assert_eq!(map.get("not a key"), None);
+
+        let mut expected = strings.clone();
+        expected.sort_unstable();
+        let keys: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
+        assert_eq!(keys, expected);
+
+        let from_b: Vec<&str> = map
+            .range::<str, _>((Bound::Included("b"), Bound::Unbounded))
+            .map(|(k, _)| k.as_str())
+            .collect();
+        let expected_from_b: Vec<&str> = expected.iter().copied().filter(|s| *s >= "b").collect();
+        assert_eq!(from_b, expected_from_b);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Deref<Target = str>
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn deref_matches_source() {
+        for s in all_strings() {
+            let g = gs(s);
+            let derefed: &str = &g;
+            assert_eq!(derefed, s, "{s:?}");
+            assert_eq!(&*g, s, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn deref_coerces_at_call_sites() {
+        fn byte_len(s: &str) -> usize {
+            s.len()
+        }
+
+        for s in all_strings() {
+            assert_eq!(byte_len(&gs(s)), s.len(), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn str_methods_are_available_through_deref() {
+        for s in all_strings() {
+            let g = gs(s);
+            assert_eq!(g.is_empty(), s.is_empty(), "{s:?}");
+            assert_eq!(g.chars().count(), s.chars().count(), "{s:?}");
+            assert_eq!(g.bytes().collect::<Vec<_>>(), s.as_bytes(), "{s:?}");
+            assert_eq!(g.starts_with("abc"), s.starts_with("abc"), "{s:?}");
+            assert_eq!(g.contains('é'), s.contains('é'), "{s:?}");
+            assert_eq!(g.to_uppercase(), s.to_uppercase(), "{s:?}");
+            assert_eq!(g.trim(), s.trim(), "{s:?}");
+            assert_eq!(g.find('d'), s.find('d'), "{s:?}");
+        }
+    }
+
+    /// `len` and `get` exist both on GermanString and on str. The inherent ones win, so they
+    /// have to agree with what the str ones would have returned for the same byte offset.
+    #[test]
+    fn inherent_methods_agree_with_the_str_methods_they_shadow() {
+        for s in all_strings() {
+            let g = gs(s);
+            assert_eq!(g.len(), s.len(), "{s:?}");
+            for idx in 0..=s.len() + 1 {
+                let expected = s.get(idx..).and_then(|rest| rest.chars().next());
+                assert_eq!(g.get(idx), expected, "{s:?} at {idx}");
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Clone
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn clone_matches_original() {
+        for s in all_strings() {
+            let g = gs(s);
+            let c = g.clone();
+            assert_eq!(c.as_str(), s, "{s:?}");
+            assert_eq!(c.len(), s.len(), "{s:?}");
+            assert!(c == g, "{s:?}");
+            assert_eq!(c.cmp(&g), Ordering::Equal, "{s:?}");
+            assert_eq!(c.variant_type(), g.variant_type(), "{s:?}");
+            assert_eq!(hash_of(&c), hash_of(&g), "{s:?}");
+        }
+    }
+
+    /// Both ways of building a large string allocate differently (copied from a &str, or
+    /// adopted from a String), and a clone of either has to be freed the same way.
+    #[test]
+    fn clone_matches_original_for_both_constructors() {
+        for s in all_strings() {
+            let from_str = GermanString::new_from_str(s).unwrap();
+            let from_string = GermanString::new_from_string(s.to_string()).unwrap();
+            assert_eq!(from_str.clone().as_str(), s, "{s:?}");
+            assert_eq!(from_string.clone().as_str(), s, "{s:?}");
+        }
+    }
+
+    /// A clone must never share the original's heap allocation.
+    #[test]
+    fn clone_of_large_string_has_its_own_allocation() {
+        for s in all_strings() {
+            let g = gs(s);
+            let c = g.clone();
+            assert_ne!(g.as_str().as_ptr(), c.as_str().as_ptr(), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn clone_outlives_original() {
+        for s in all_strings() {
+            let g = gs(s);
+            let c = g.clone();
+            drop(g);
+            assert_eq!(c.as_str(), s, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn original_outlives_clone() {
+        for s in all_strings() {
+            let g = gs(s);
+            let c = g.clone();
+            drop(c);
+            assert_eq!(g.as_str(), s, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn clone_of_clone_matches_original() {
+        for s in all_strings() {
+            let g = gs(s);
+            let c2 = {
+                let c1 = g.clone();
+                c1.clone()
+            };
+            drop(g);
+            assert_eq!(c2.as_str(), s, "{s:?}");
+        }
+    }
+
+    /// Many clones of one string, dropped in an order unrelated to the order they were made in.
+    #[test]
+    fn many_clones_drop_independently() {
+        for s in all_strings() {
+            let g = gs(s);
+            let mut clones: Vec<GermanString> = (0..8).map(|_| g.clone()).collect();
+            drop(g);
+
+            for idx in [5, 0, 3, 0, 1] {
+                drop(clones.remove(idx));
+                for c in &clones {
+                    assert_eq!(c.as_str(), s, "{s:?}");
+                }
+            }
+        }
+    }
+
+    /// Converting into a String hands the heap allocation over without copying, which only
+    /// works if a clone's allocation has the same layout as the original's.
+    #[test]
+    fn clone_converts_into_string() {
+        for s in all_strings() {
+            let g = gs(s);
+            let from_clone = String::from(g.clone());
+            assert_eq!(from_clone, s, "{s:?}");
+            assert_eq!(g.as_str(), s, "{s:?}");
+
+            let c = g.clone();
+            let from_original = String::from(g);
+            assert_eq!(from_original, s, "{s:?}");
+            assert_eq!(c.as_str(), s, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn clone_can_be_consumed_by_the_owning_iterator() {
+        for s in all_strings() {
+            let g = gs(s);
+            let chars: Vec<char> = g.clone().into_iter().collect();
+            assert_eq!(chars, s.chars().collect::<Vec<_>>(), "{s:?}");
+            assert_eq!(g.as_str(), s, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn collections_of_german_strings_clone() {
+        let strings = all_strings();
+        let original: Vec<GermanString> = strings.iter().map(|s| gs(s)).collect();
+        let cloned = original.clone();
+        drop(original);
+
+        assert_eq!(cloned.len(), strings.len());
+        for (c, s) in cloned.iter().zip(&strings) {
+            assert_eq!(c.as_str(), *s);
+        }
+    }
+
+    #[test]
+    fn clone_from_replaces_the_previous_value() {
+        let strings = all_strings();
+        for from in &strings {
+            for to in &strings {
+                let mut g = gs(from);
+                g.clone_from(&gs(to));
+                assert_eq!(g.as_str(), *to, "{from:?} -> {to:?}");
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Comparisons with str, &str and String on the left hand side
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn reverse_equality_matches_str() {
+        let strings = all_strings();
+        for &a in &strings {
+            for &b in &strings {
+                let g = gs(b);
+                let expected = a == b;
+
+                // str, &str and String on the left, in that order.
+                assert_eq!(*a == g, expected, "str {a:?} == {b:?}");
+                assert_eq!(a == g, expected, "&str {a:?} == {b:?}");
+                assert_eq!(a.to_string() == g, expected, "String {a:?} == {b:?}");
+
+                assert_eq!(*a != g, !expected, "str {a:?} != {b:?}");
+                assert_eq!(a != g, !expected, "&str {a:?} != {b:?}");
+                assert_eq!(a.to_string() != g, !expected, "String {a:?} != {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn reverse_partial_cmp_matches_str() {
+        let strings = all_strings();
+        for &a in &strings {
+            for &b in &strings {
+                let g = gs(b);
+                let expected = Some(a.cmp(b));
+
+                assert_eq!(a[..].partial_cmp(&g), expected, "str {a:?} vs {b:?}");
+                // Spelled out, since `a.partial_cmp` would auto-deref to the str impl.
+                assert_eq!(<&str as PartialOrd<GermanString>>::partial_cmp(&a, &g), expected, "&str {a:?} vs {b:?}");
+                assert_eq!(a.to_string().partial_cmp(&g), expected, "String {a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn reverse_comparison_operators_match_str() {
+        let strings = all_strings();
+        for &a in &strings {
+            for &b in &strings {
+                let g = gs(b);
+                let owned = a.to_string();
+
+                assert_eq!(*a < g, a < b, "str {a:?} < {b:?}");
+                assert_eq!(*a <= g, a <= b, "str {a:?} <= {b:?}");
+                assert_eq!(*a > g, a > b, "str {a:?} > {b:?}");
+                assert_eq!(*a >= g, a >= b, "str {a:?} >= {b:?}");
+
+                assert_eq!(a < g, a < b, "&str {a:?} < {b:?}");
+                assert_eq!(a <= g, a <= b, "&str {a:?} <= {b:?}");
+                assert_eq!(a > g, a > b, "&str {a:?} > {b:?}");
+                assert_eq!(a >= g, a >= b, "&str {a:?} >= {b:?}");
+
+                assert_eq!(owned < g, a < b, "String {a:?} < {b:?}");
+                assert_eq!(owned <= g, a <= b, "String {a:?} <= {b:?}");
+                assert_eq!(owned > g, a > b, "String {a:?} > {b:?}");
+                assert_eq!(owned >= g, a >= b, "String {a:?} >= {b:?}");
+            }
+        }
+    }
+
+    /// Swapping the two sides of a comparison must flip the result and nothing else.
+    #[test]
+    fn reverse_comparisons_mirror_forward_comparisons() {
+        let strings = all_strings();
+        for &a in &strings {
+            for &b in &strings {
+                let g = gs(b);
+                let owned = a.to_string();
+
+                assert_eq!(*a == g, g == *a, "str {a:?} {b:?}");
+                assert_eq!(a == g, g == a, "&str {a:?} {b:?}");
+                assert_eq!(owned == g, g == owned, "String {a:?} {b:?}");
+
+                let forward = |o: Option<Ordering>| o.map(Ordering::reverse);
+                assert_eq!(a[..].partial_cmp(&g), forward(g.partial_cmp(&a[..])), "str {a:?} {b:?}");
+                assert_eq!(
+                    <&str as PartialOrd<GermanString>>::partial_cmp(&a, &g),
+                    forward(g.partial_cmp(&a)),
+                    "&str {a:?} {b:?}"
+                );
+                assert_eq!(owned.partial_cmp(&g), forward(g.partial_cmp(&owned)), "String {a:?} {b:?}");
+            }
+        }
+    }
+
+    /// Sorting plain strings against a GermanString pivot only needs the reverse impls.
+    #[test]
+    fn reverse_ordering_partitions_like_str() {
+        let strings = all_strings();
+        for &pivot in &strings {
+            let g = gs(pivot);
+            let below: Vec<&str> = strings.iter().copied().filter(|s| *s < g).collect();
+            let expected: Vec<&str> = strings.iter().copied().filter(|s| *s < pivot).collect();
+            assert_eq!(below, expected, "pivot {pivot:?}");
+        }
     }
 }

@@ -3,7 +3,7 @@
 use crate::core::GermanString;
 
 pub(crate) fn gs(s: &str) -> GermanString {
-    GermanString::from(s.to_string())
+    GermanString::try_from(s.to_string()).unwrap()
 }
 
 /// Strings covering every boundary: empty, inside the prefix, exactly the prefix,
